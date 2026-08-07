@@ -1,17 +1,18 @@
 "use client"
 
 import { fieldsToJsonSchema } from "@/ai/schema"
-import { saveSettingsAction } from "@/app/(app)/settings/actions"
+import { saveSettingsAction, testLLMProviderAction } from "@/app/(app)/settings/actions"
 import { FormError } from "@/components/forms/error"
-import { FormTextarea } from "@/components/forms/simple"
+import { FormSelect, FormTextarea } from "@/components/forms/simple"
 import { Button } from "@/components/ui/button"
 import { Card, CardTitle } from "@/components/ui/card"
 import { PROVIDERS } from "@/lib/llm-providers"
+import { DEFAULT_PREVIEW_FORMAT } from "@/lib/previews/format"
 import { Field } from "@/prisma/client"
 import type { DragEndEvent } from "@dnd-kit/core"
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from "@dnd-kit/core"
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable"
-import { CircleCheckBig, Edit, GripVertical } from "lucide-react"
+import { CircleCheckBig, Edit, GripVertical, Loader2, Plug, X } from "lucide-react"
 import Link from "next/link"
 import { useActionState, useState } from "react"
 
@@ -65,7 +66,7 @@ export default function LLMSettingsForm({
     <>
       <form action={saveAction} className="space-y-4">
         {isSelfHosted && (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <label className="text-sm font-medium">LLM providers</label>
             <DndProviderBlocks
               providerOrder={providerOrder}
@@ -78,6 +79,25 @@ export default function LLMSettingsForm({
         )}
 
         {isSelfHosted && <input type="hidden" name="llm_providers" value={providerOrder.join(",")} />}
+
+        {isSelfHosted && (
+          <div className="space-y-1">
+            <FormSelect
+              title="Image format for AI analysis"
+              name="llm_attachment_format"
+              defaultValue={settings.llm_attachment_format || DEFAULT_PREVIEW_FORMAT}
+              items={[
+                { code: "webp", name: "WebP (smaller, less tokens)" },
+                { code: "jpeg", name: "JPEG (most compatible)" },
+                { code: "png", name: "PNG (best quality, expensive)" },
+              ]}
+            />
+            <small className="text-muted-foreground">
+              WebP is smaller and works with cloud providers. Use PNG or JPEG for local models like Ollama that cannot
+              decode WebP.
+            </small>
+          </div>
+        )}
 
         <FormTextarea
           title="Prompt for File Analysis Form"
@@ -152,16 +172,18 @@ function DndProviderBlocks({
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <SortableContext items={providerOrder} strategy={verticalListSortingStrategy}>
-        {providerOrder.map((providerKey, idx) => (
-          <SortableProviderBlock
-            key={providerKey}
-            id={providerKey}
-            idx={idx}
-            providerKey={providerKey}
-            value={providerValues[providerKey]}
-            handleValueChange={handleProviderValueChange}
-          />
-        ))}
+        <div className="my-6 flex flex-col gap-4">
+          {providerOrder.map((providerKey, idx) => (
+            <SortableProviderBlock
+              key={providerKey}
+              id={providerKey}
+              idx={idx}
+              providerKey={providerKey}
+              value={providerValues[providerKey]}
+              handleValueChange={handleProviderValueChange}
+            />
+          ))}
+        </div>
       </SortableContext>
     </DndContext>
   )
@@ -175,20 +197,43 @@ type SortableProviderBlockProps = {
   handleValueChange: (providerKey: string, field: "apiKey" | "model" | "baseUrl", value: string) => void
 }
 
+type TestState = {
+  status: "idle" | "testing" | "success" | "error"
+  message?: string
+}
+
 function SortableProviderBlock({ id, idx, providerKey, value, handleValueChange }: SortableProviderBlockProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
+  const [testState, setTestState] = useState<TestState>({ status: "idle" })
 
   const provider = PROVIDERS.find((p) => p.key === providerKey)
   if (!provider) return null
+
+  async function handleTest() {
+    setTestState({ status: "testing" })
+    try {
+      const result = await testLLMProviderAction(providerKey, value.apiKey, value.model, value.baseUrl || undefined)
+      setTestState({
+        status: result.success ? "success" : "error",
+        message: result.message,
+      })
+    } catch (error) {
+      setTestState({
+        status: "error",
+        message: error instanceof Error ? error.message : "Test failed unexpectedly",
+      })
+    }
+  }
+
   return (
-    <div
+    <Card
       ref={setNodeRef}
       style={{
         transform: transform ? `translateY(${transform.y}px)` : undefined,
         transition,
         opacity: isDragging ? 0.6 : 1,
       }}
-      className={`bg-muted rounded-lg p-4 shadow flex flex-col gap-2 mb-2`}
+      className="flex flex-col gap-2 p-4"
     >
       <div className="flex flex-row items-center gap-2 mb-2">
         {/* Drag handle */}
@@ -201,6 +246,25 @@ function SortableProviderBlock({ id, idx, providerKey, value, handleValueChange 
           <GripVertical className="w-5 h-5 text-muted-foreground" />
         </span>
         <span className="font-semibold">{provider.label}</span>
+        <span className="text-xs text-muted-foreground">#{idx + 1}</span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleTest}
+          disabled={testState.status === "testing" || !value.model}
+          className="ml-auto h-7 text-xs"
+        >
+          {testState.status === "testing" ? (
+            <>
+              <Loader2 className="w-3 h-3 animate-spin" /> Testing...
+            </>
+          ) : (
+            <>
+              <Plug className="w-3 h-3" /> Test
+            </>
+          )}
+        </Button>
       </div>
       <div className="flex flex-row gap-4 items-center">
         <input
@@ -230,6 +294,16 @@ function SortableProviderBlock({ id, idx, providerKey, value, handleValueChange 
           placeholder="Base URL (e.g. http://localhost:11434/v1)"
         />
       )}
+      {testState.status === "success" && (
+        <p className="text-sm text-green-600 flex flex-row items-center gap-1">
+          <CircleCheckBig className="w-4 h-4 flex-shrink-0" /> {testState.message}
+        </p>
+      )}
+      {testState.status === "error" && (
+        <p className="text-sm text-red-500 flex flex-row items-start gap-1">
+          <X className="w-4 h-4 flex-shrink-0 mt-0.5" /> {testState.message}
+        </p>
+      )}
       {provider.apiDoc && (
         <small className="text-muted-foreground">
           Get your API key from{" "}
@@ -238,6 +312,6 @@ function SortableProviderBlock({ id, idx, providerKey, value, handleValueChange 
           </a>
         </small>
       )}
-    </div>
+    </Card>
   )
 }

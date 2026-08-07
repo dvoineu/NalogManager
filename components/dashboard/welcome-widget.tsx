@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardDescription, CardTitle } from "@/components/ui/card"
 import { ColoredText } from "@/components/ui/colored-text"
 import { getCurrentUser } from "@/lib/auth"
+import config from "@/lib/config"
 import { getSettings, updateSettings } from "@/models/settings"
 import { Banknote, ChartBarStacked, FolderOpenDot, Key, TextCursorInput, X } from "lucide-react"
 import { revalidatePath } from "next/cache"
@@ -86,7 +87,7 @@ export async function WelcomeWidget() {
           </Link>
         </div>
         <div className="flex flex-wrap gap-2 mt-8">
-          {settings.openai_api_key === "" && (
+          {config.selfHosted.isEnabled && !settings.openai_api_key && (
             <Link href="/settings/llm">
               <Button>
                 <Key className="h-4 w-4" />
@@ -94,7 +95,7 @@ export async function WelcomeWidget() {
               </Button>
             </Link>
           )}
-          <Link href="/settings">
+          <Link href="/settings/currencies">
             <Button variant="outline">
               <Banknote className="h-4 w-4" />
               Default Currency: {settings.default_currency}

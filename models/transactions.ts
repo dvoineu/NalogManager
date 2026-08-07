@@ -65,8 +65,8 @@ export const getTransactions = cache(
 
       if (filters.dateFrom || filters.dateTo) {
         where.issuedAt = {
-          gte: filters.dateFrom ? new Date(filters.dateFrom) : undefined,
-          lte: filters.dateTo ? new Date(filters.dateTo) : undefined,
+          gte: filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00.000Z`) : undefined,
+          lte: filters.dateTo ? new Date(`${filters.dateTo}T23:59:59.999Z`) : undefined,
         }
       }
 
@@ -132,10 +132,32 @@ export const getTransactionsByFileId = cache(async (fileId: string, userId: stri
   })
 })
 
+// --- 1. New Dedicated Deduplication Function ---
+export const findDuplicateTransaction = async (userId: string, data: TransactionData) => {
+  const { standard } = await splitTransactionDataExtraFields(data, userId)
+  const currencyCode = standard.currencyCode || "USD"
+
+  if (standard.total && standard.merchant && standard.issuedAt) {
+    const existingTransaction = await prisma.transaction.findFirst({
+      where: {
+        userId: userId,
+        total: standard.total,
+        merchant: standard.merchant,
+        issuedAt: standard.issuedAt,
+        currencyCode: currencyCode,
+      },
+    })
+
+    return existingTransaction
+  }
+
+  return null
+}
+
 export const createTransaction = async (userId: string, data: TransactionData): Promise<Transaction> => {
   const { standard, extra } = await splitTransactionDataExtraFields(data, userId)
 
-  return await prisma.transaction.create({
+  const newTransaction = await prisma.transaction.create({
     data: {
       ...standard,
       extra: extra,
@@ -143,6 +165,8 @@ export const createTransaction = async (userId: string, data: TransactionData): 
       userId,
     },
   })
+
+  return newTransaction
 }
 
 export const updateTransaction = async (id: string, userId: string, data: TransactionData): Promise<Transaction> => {

@@ -12,7 +12,7 @@
 
 </div>
 
-> [!NOTE]  
+> [!NOTE]
 > ☝️ I'm currently looking for a job! Particularly interested in companies in Berlin or remote positions in Germany. Here's [my CV](https://raw.githubusercontent.com/vas3k/vas3k/master/cv.pdf) and [Linkedin profile](https://www.linkedin.com/in/vas3k/). Thank you 🙏
 
 TaxHacker is a self-hosted accounting app designed for freelancers, indie-hackers, and small businesses who want to save time and automate expense and income tracking using the power of modern AI.
@@ -130,6 +130,7 @@ The Docker Compose setup includes:
 - Automatic database migrations on startup
 - Volume mounts for persistent data storage
 - Production-ready configuration
+- `no-new-privileges` security option on all containers
 
 New Docker images are automatically built and published with every release. You can use specific version tags (e.g., `v1.0.0`) or `latest` for the most recent version.
 
@@ -164,8 +165,13 @@ Configure TaxHacker for your specific needs with these environment variables:
 | `BASE_URL` | No | Base URL for the application | `http://localhost:7331` |
 | `SELF_HOSTED_MODE` | No | Set to "true" for self-hosting: enables auto-login, custom API keys, and additional features | `true` |
 | `DISABLE_SIGNUP` | No | Disable new user registration on your instance | `false` |
-| `BETTER_AUTH_SECRET` | Yes | Secret key for authentication (minimum 16 characters) | `your-secure-random-key` |
+| `BETTER_AUTH_SECRET` | Recommended | Secret key for authentication and email credential encryption (minimum 16 characters). In self-hosted Docker, TaxHacker auto-generates and persists one in `./data/.better_auth_secret` if unset. | `your-secure-random-key` |
+| `POSTGRES_PASSWORD` | Yes (`docker-compose.build.yml`) | Password for the bundled Postgres when building locally — used in both `POSTGRES_PASSWORD` and `DATABASE_URL` | output of `openssl rand -hex 24` |
+| `POSTGRES_USER` | No (`docker-compose.build.yml`) | Database user (defaults to `postgres`) | `postgres` |
+| `POSTGRES_DB` | No (`docker-compose.build.yml`) | Database name (defaults to `taxhacker`) | `taxhacker` |
 
+
+> 💡 **Need internet access with authentication?** See [docs/self-hosted-public-access.md](docs/self-hosted-public-access.md) for a workaround (yes, it's cursed).
 
 ## ⌨️ Local Development
 

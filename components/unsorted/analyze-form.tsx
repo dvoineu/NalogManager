@@ -1,6 +1,7 @@
 "use client"
 
 import { useNotification } from "@/app/(app)/context"
+import { deleteTransactionAction } from "@/app/(app)/transactions/actions"
 import { analyzeFileAction, deleteUnsortedFileAction, saveFileAsTransactionAction } from "@/app/(app)/unsorted/actions"
 import { CurrencyConverterTool } from "@/components/agents/currency-converter"
 import { ItemsDetectTool } from "@/components/agents/items-detect"
@@ -13,10 +14,34 @@ import { FormSelectType } from "@/components/forms/select-type"
 import { FormInput, FormTextarea } from "@/components/forms/simple"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Category, Currency, Field, File, Project } from "@/prisma/client"
+import { ActionState } from "@/lib/actions"
+import { Category, Currency, Field, File, Project, Transaction } from "@/prisma/client"
 import { format } from "date-fns"
 import { ArrowDownToLine, Brain, Loader2, Trash2 } from "lucide-react"
 import { startTransition, useActionState, useMemo, useState } from "react"
+import { useFormStatus } from "react-dom"
+import { DuplicateModal } from "../transactions/duplicate-modal"
+
+function SaveButton({ isSaving }: { isSaving: boolean }) {
+  const { pending } = useFormStatus()
+  const loading = pending || isSaving
+
+  return (
+    <Button type="submit" disabled={loading} data-save-button>
+      {loading ? (
+        <>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Saving...
+        </>
+      ) : (
+        <>
+          <ArrowDownToLine className="h-4 w-4" />
+          Save as Transaction
+        </>
+      )}
+    </Button>
+  )
+}
 
 export default function AnalyzeForm({
   file,
@@ -40,6 +65,9 @@ export default function AnalyzeForm({
   const [deleteState, deleteAction, isDeleting] = useActionState(deleteUnsortedFileAction, null)
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState("")
+  const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false)
+  const [duplicateData, setDuplicateData] = useState<ActionState<Transaction>["duplicateData"] | null>(null)
+  const [pendingFormData, setPendingFormData] = useState<FormData | null>(null)
 
   const fieldMap = useMemo(() => {
     return fields.reduce(
@@ -83,7 +111,7 @@ export default function AnalyzeForm({
     const cachedResults = file.cachedParseResult
       ? Object.fromEntries(
           Object.entries(file.cachedParseResult as Record<string, string>).filter(
-            ([_, value]) => value !== null && value !== undefined && value !== ""
+            ([, value]) => value !== null && value !== undefined && value !== ""
           )
         )
       : {}
@@ -107,11 +135,51 @@ export default function AnalyzeForm({
         showNotification({ code: "global.banner", message: "Saved!", type: "success" })
         showNotification({ code: "sidebar.transactions", message: "new" })
         setTimeout(() => showNotification({ code: "sidebar.transactions", message: "" }), 3000)
+      } else if (result.error === "DUPLICATE_FOUND" && result.duplicateData) {
+        setDuplicateData(result.duplicateData)
+        setPendingFormData(formData) // Save the form data so we can retry later
+        setIsDuplicateModalOpen(true)
       } else {
         setSaveError(result.error ? result.error : "Something went wrong...")
         showNotification({ code: "global.banner", message: "Failed to save", type: "failed" })
       }
     })
+  }
+
+  const handleForceSave = () => {
+    if (!pendingFormData) return
+
+    setIsDuplicateModalOpen(false)
+
+    const newFormData = new FormData()
+    for (const [key, value] of pendingFormData.entries()) {
+      newFormData.append(key, value)
+    }
+    newFormData.append("forceSave", "true")
+
+    saveAsTransaction(newFormData)
+  }
+
+  const handleCancelDuplicate = () => {
+    setIsDuplicateModalOpen(false)
+    setPendingFormData(null)
+    setDuplicateData(null)
+  }
+  const handleReplaceOld = async () => {
+    if (!duplicateData || !pendingFormData) return
+
+    setIsDuplicateModalOpen(false)
+    setIsSaving(true)
+
+    try {
+      await deleteTransactionAction(null, duplicateData.existingTransaction.id)
+
+      await saveAsTransaction(pendingFormData)
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to replace transaction")
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   const startAnalyze = async () => {
@@ -128,7 +196,7 @@ export default function AnalyzeForm({
       } else {
         const nonEmptyFields = Object.fromEntries(
           Object.entries(results.data?.output || {}).filter(
-            ([_, value]) => value !== null && value !== undefined && value !== ""
+            ([, value]) => value !== null && value !== undefined && value !== ""
           )
         )
         setFormData({ ...formData, ...nonEmptyFields })
@@ -203,7 +271,9 @@ export default function AnalyzeForm({
             value={formData.total || ""}
             onChange={(e) => {
               const newValue = parseFloat(e.target.value || "0")
-              !isNaN(newValue) && setFormData((prev) => ({ ...prev, total: newValue }))
+              if (!isNaN(newValue)) {
+                setFormData((prev) => ({ ...prev, total: newValue }))
+              }
             }}
             className="w-32"
             required={fieldMap.total.isRequired}
@@ -230,12 +300,17 @@ export default function AnalyzeForm({
         </div>
 
         {formData.total != 0 && formData.currencyCode && formData.currencyCode !== settings.default_currency && (
-          <ToolWindow title={`Exchange rate on ${format(new Date(formData.issuedAt || Date.now()), "LLLL dd, yyyy")}`}>
+          <ToolWindow
+            title={`Exchange rate on ${format(
+              formData.issuedAt ? new Date(formData.issuedAt + "T00:00:00") : new Date(),
+              "LLLL dd, yyyy"
+            )}`}
+          >
             <CurrencyConverterTool
               originalTotal={formData.total}
               originalCurrencyCode={formData.currencyCode}
               targetCurrencyCode={settings.default_currency}
-              date={new Date(formData.issuedAt || Date.now())}
+              date={formData.issuedAt ? new Date(formData.issuedAt + "T00:00:00") : new Date()}
               onChange={(value) => setFormData((prev) => ({ ...prev, convertedTotal: value }))}
             />
             <input type="hidden" name="convertedCurrencyCode" value={settings.default_currency} />
@@ -326,23 +401,20 @@ export default function AnalyzeForm({
             variant="destructive"
             disabled={isDeleting}
           >
-            <Trash2 className="h-4 w-4" />
-            {isDeleting ? "⏳ Deleting..." : "Delete"}
-          </Button>
-
-          <Button type="submit" disabled={isSaving} data-save-button>
-            {isSaving ? (
+            {isDeleting ? (
               <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Deleting...
               </>
             ) : (
               <>
-                <ArrowDownToLine className="h-4 w-4" />
-                Save as Transaction
+                <Trash2 className="h-4 w-4" />
+                Delete
               </>
             )}
           </Button>
+
+          <SaveButton isSaving={isSaving} />
         </div>
 
         <div>
@@ -350,6 +422,14 @@ export default function AnalyzeForm({
           {saveError && <FormError>{saveError}</FormError>}
         </div>
       </form>
+      <DuplicateModal
+        isOpen={isDuplicateModalOpen}
+        onOpenChange={setIsDuplicateModalOpen}
+        duplicateData={duplicateData}
+        onKeepBoth={handleForceSave} // This should trigger the action again with forceSave: true
+        onReplaceOld={handleReplaceOld}
+        onCancel={handleCancelDuplicate} // This should just close the modal
+      />
     </>
   )
 }
